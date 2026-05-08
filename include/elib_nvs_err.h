@@ -1,0 +1,18 @@
+/* elib_nvs_err.h - NVS Wear Leveling Error Codes */
+#ifndef ELIB_NVS_ERR_H
+#define ELIB_NVS_ERR_H
+
+typedef enum {
+    ELIB_NVS_OK = 0,
+    ELIB_NVS_ERR_INVALID_PARAM,
+    ELIB_NVS_ERR_NOT_INITIALIZED,
+    ELIB_NVS_ERR_NOT_FOUND,
+    ELIB_NVS_ERR_FULL,
+    ELIB_NVS_ERR_WRITE_FAILED,
+    ELIB_NVS_ERR_READ_FAILED,
+    ELIB_NVS_ERR_ERASE_FAILED,
+    ELIB_NVS_ERR_CORRUPTED,
+    ELIB_NVS_ERR_NO_MEMORY
+} elib_nvs_err_t;
+
+#endif /* ELIB_NVS_ERR_H */
