@@ -48,7 +48,7 @@ elib_nvs_err_t elib_nvs_init(
     ctx->last_write_offset = 0xFFFFFFFF;  /* 初始化为无效值 */
 
     /* 标记已初始化 */
-    ctx->initialized = 1;
+    ctx->bit_flags.initialized = 1;
 
     /* 扫描并恢复写入位置 (掉电恢复) */
     int result = elib_nvs_recover_write_position(ctx);
@@ -68,7 +68,7 @@ void elib_nvs_deinit(elib_nvs_ctx_t *ctx) {
     if (ctx == NULL) {
         return;
     }
-    ctx->initialized = 0;
+    ctx->bit_flags.initialized = 0;
 }
 
 /**
@@ -84,7 +84,7 @@ elib_nvs_err_t elib_nvs_write(elib_nvs_ctx_t *ctx, uint32_t addr, const void *da
         return ELIB_NVS_ERR_INVALID_PARAM;
     }
 
-    if (!ctx->initialized) {
+    if (!ctx->bit_flags.initialized) {
         return ELIB_NVS_ERR_NOT_INITIALIZED;
     }
 
@@ -112,7 +112,7 @@ elib_nvs_err_t elib_nvs_read(elib_nvs_ctx_t *ctx, uint32_t addr, void *out, size
         return ELIB_NVS_ERR_INVALID_PARAM;
     }
 
-    if (!ctx->initialized) {
+    if (!ctx->bit_flags.initialized) {
         return ELIB_NVS_ERR_NOT_INITIALIZED;
     }
 
@@ -139,7 +139,7 @@ elib_nvs_err_t elib_nvs_erase(elib_nvs_ctx_t *ctx, uint32_t addr, size_t size) {
         return ELIB_NVS_ERR_INVALID_PARAM;
     }
 
-    if (!ctx->initialized) {
+    if (!ctx->bit_flags.initialized) {
         return ELIB_NVS_ERR_NOT_INITIALIZED;
     }
 

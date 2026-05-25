@@ -50,7 +50,10 @@ struct elib_nvs_ctx {
     uint32_t next_write_offset; /* 下次写入位置 (相对于 start_addr 的偏移) */
     uint32_t last_write_offset; /* 最近一次写入位置 (新增，用于读取定位) */
 
-    int initialized;
+    /* 位域标志 */
+    struct {
+        uint8_t initialized : 1;
+    } bit_flags;
 };
 
 #endif /* ELIB_NVS_TYPES_H */

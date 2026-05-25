@@ -12,7 +12,7 @@ int elib_nvs_is_region_free(
     uint32_t offset,
     uint32_t len
 ) {
-    if (ctx == NULL || !ctx->initialized) {
+    if (ctx == NULL || !ctx->bit_flags.initialized) {
         return -1;
     }
     if (offset + len > ctx->total_size) {
@@ -52,7 +52,7 @@ int32_t elib_nvs_find_free_offset(
     const elib_nvs_ctx_t *ctx,
     uint32_t len
 ) {
-    if (ctx == NULL || !ctx->initialized) {
+    if (ctx == NULL || !ctx->bit_flags.initialized) {
         return -1;
     }
     if (len == 0) {
@@ -75,7 +75,7 @@ int32_t elib_nvs_find_free_offset(
 }
 
 int elib_nvs_recover_write_position(elib_nvs_ctx_t *ctx) {
-    if (ctx == NULL || !ctx->initialized) {
+    if (ctx == NULL || !ctx->bit_flags.initialized) {
         return -1;
     }
 

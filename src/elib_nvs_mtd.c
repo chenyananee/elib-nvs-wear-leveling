@@ -9,7 +9,7 @@ elib_nvs_err_t elib_nvs_mtd_write(elib_nvs_ctx_t *ctx, const void *data, size_t 
         return ELIB_NVS_ERR_INVALID_PARAM;
     }
 
-    if (!ctx->initialized) {
+    if (!ctx->bit_flags.initialized) {
         return ELIB_NVS_ERR_NOT_INITIALIZED;
     }
 
@@ -61,7 +61,7 @@ elib_nvs_err_t elib_nvs_mtd_read(elib_nvs_ctx_t *ctx, void *out, size_t len) {
         return ELIB_NVS_ERR_INVALID_PARAM;
     }
 
-    if (!ctx->initialized) {
+    if (!ctx->bit_flags.initialized) {
         return ELIB_NVS_ERR_NOT_INITIALIZED;
     }
 
@@ -85,7 +85,7 @@ elib_nvs_err_t elib_nvs_mtd_erase(elib_nvs_ctx_t *ctx, elib_nvs_addr_t addr, siz
         return ELIB_NVS_ERR_INVALID_PARAM;
     }
 
-    if (!ctx->initialized) {
+    if (!ctx->bit_flags.initialized) {
         return ELIB_NVS_ERR_NOT_INITIALIZED;
     }
 
