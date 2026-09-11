@@ -1,4 +1,5 @@
 /* driver_template.c - NVS HAL Driver Template */
+#include "elib_nvs.h"
 #include "elib_nvs_hal.h"
 #include <stdint.h>
 #include <string.h>
@@ -21,6 +22,9 @@ typedef struct {
 static elib_nvs_err_t my_storage_read(void *user_data, elib_nvs_addr_t addr, void *buf, size_t len) {
     my_storage_driver_t *drv = (my_storage_driver_t *)user_data;
 
+    (void)drv;
+    (void)addr;
+
     /* TODO: 替换为实际的读操作 */
     /* 示例：spi_flash_read(drv->hw_handle, addr, buf, len); */
 
@@ -34,6 +38,11 @@ static elib_nvs_err_t my_storage_read(void *user_data, elib_nvs_addr_t addr, voi
 static elib_nvs_err_t my_storage_write(void *user_data, elib_nvs_addr_t addr, const void *buf, size_t len) {
     my_storage_driver_t *drv = (my_storage_driver_t *)user_data;
 
+    (void)drv;
+    (void)addr;
+    (void)buf;
+    (void)len;
+
     /* TODO: 替换为实际的写操作 */
     /* 示例：spi_flash_write(drv->hw_handle, addr, buf, len); */
 
@@ -45,6 +54,10 @@ static elib_nvs_err_t my_storage_write(void *user_data, elib_nvs_addr_t addr, co
  * ============================================================ */
 static elib_nvs_err_t my_storage_erase(void *user_data, elib_nvs_addr_t addr, size_t size) {
     my_storage_driver_t *drv = (my_storage_driver_t *)user_data;
+
+    (void)drv;
+    (void)addr;
+    (void)size;
 
     /* TODO: 替换为实际的擦除操作 */
     /* 示例：spi_flash_erase(drv->hw_handle, addr, size); */

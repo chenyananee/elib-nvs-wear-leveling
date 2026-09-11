@@ -4,7 +4,6 @@
 
 #include "elib_nvs_err.h"
 #include "elib_nvs_types.h"
-#include "elib_nvs_config.h"
 #include "elib_nvs_hal.h"
 #include "elib_nvs_core.h"
 #include "elib_nvs_mtd.h"
