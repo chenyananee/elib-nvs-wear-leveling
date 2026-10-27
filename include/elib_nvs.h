@@ -1,106 +1,116 @@
-/* elib_nvs.h - NVS Wear Leveling Main Header */
+/* elib_nvs.h - NVS Wear Leveling (single-umbrella public API)
+ *
+ * Append-only wear leveling over flash/EEPROM-style media: every record
+ * occupies one fixed-size data unit, writes march forward one unit at a
+ * time and the whole managed region is erased (lazily, at the next write
+ * that can no longer find a slot) when exhausted. Erase wear is spread
+ * across every managed page without a wear table.
+ *
+ * Rules of the game:
+ *  - zero dynamic memory: the user allocates the context, the library
+ *    allocates nothing (not even a scratch buffer - emptiness checks are
+ *    delegated to the user's is_empty op)
+ *  - the library only ever stores "the newest record"; data integrity
+ *    (torn writes, CRC) is out of scope here - pair with elib-safe-storage
+ *  - modifying the managed region outside this library is undefined, but
+ *    the window-based relocation heals it at runtime */
 #ifndef ELIB_NVS_H
 #define ELIB_NVS_H
 
-#include "elib_nvs_err.h"
-#include "elib_nvs_types.h"
-#include "elib_nvs_hal.h"
-#include "elib_nvs_core.h"
-#include "elib_nvs_mtd.h"
-
-/* Public API functions */
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/**
- * @brief 初始化 NVS 子系统 (V3 API - 纯运行时参数化，无全局配置)
- * @param ctx 用户预分配的上下文指针
- * @param driver 硬件抽象层驱动接口（其中包含用户资源数据）
- * @param start_addr 管理区域起始物理地址
- * @param total_size 总管理空间大小
- * @param block_size 扇区/块大小
- * @param data_unit_size 用户数据固定写入大小
- * @return elib_nvs_err_t 错误码
- */
-elib_nvs_err_t elib_nvs_init(
-    elib_nvs_ctx_t *ctx,
-    const elib_nvs_hal_driver_t *driver,
-    uint32_t start_addr,
-    uint32_t total_size,
-    uint32_t block_size,
-    uint32_t data_unit_size
-);
+/* ---- error codes ---- */
+
+typedef enum {
+    ELIB_NVS_OK = 0,
+    ELIB_NVS_ERR_INVALID_PARAM,   /* init rejected the configuration */
+    ELIB_NVS_ERR_NOT_INITIALIZED, /* API called before a successful init */
+    ELIB_NVS_ERR_IO,              /* a user op returned non-zero */
+    ELIB_NVS_ERR_EMPTY            /* nothing written to the region yet */
+} elib_nvs_err_t;
+
+/* ---- user media operations ----
+ *
+ * read/write/erase return 0 on success and any non-zero value of the
+ * user's own choosing on failure (the library maps that to
+ * ELIB_NVS_ERR_IO). erase is only ever invoked on page-aligned regions.
+ *
+ * is_empty must report 1 exactly when EVERY byte of [addr, addr+len) is
+ * currently equal to the erase_default value configured in init; the
+ * base criterion has to match that configuration or the relocation
+ * logic cannot work. Implement it the way that suits the media best
+ * (memory-mapped compare, word-wise sweep, driver-assisted check...). */
+typedef struct {
+    void *user_data; /* forwarded to every op, untouched by the library */
+    int     (*read)    (void *ud, uint32_t addr, uint8_t *buf, uint32_t len);
+    int     (*write)   (void *ud, uint32_t addr, const uint8_t *buf, uint32_t len);
+    int     (*erase)   (void *ud, uint32_t addr, uint32_t len);
+    uint8_t (*is_empty)(void *ud, uint32_t addr, uint32_t len);
+} elib_nvs_ops_t;
+
+/* ---- context (statically allocated by the user) ---- */
+typedef struct {
+    /* configuration (copied at init, kept for reset/erase) */
+    elib_nvs_ops_t ops;
+    uint32_t start_addr;      /* physical start of the managed region */
+    uint32_t managed_size;    /* page-aligned size of the managed region */
+    uint32_t erase_page_size; /* smallest erase unit of the media */
+    uint32_t unit_size;       /* fixed record size in bytes */
+    uint8_t  erase_default;   /* erased-byte value (usually 0xFF) */
+
+    /* runtime state */
+    uint32_t unit_count;      /* managed_size / unit_size (>= 1) */
+    uint32_t read_unit;       /* unit index of the newest record */
+    uint32_t write_unit;      /* unit index of the next write slot; always
+                                   sits on a verified-empty unit (or head) */
+    struct {
+        uint8_t initialized : 1;
+        uint8_t has_data    : 1; /* read_unit holds a valid record */
+    } bit_flags;
+} elib_nvs_ctx_t;
+
+/* ---- API ---- */
 
 /**
- * @brief 反初始化 NVS 子系统 (V2 API - 用户管理内存)
- * @param ctx 上下文指针
- */
-void elib_nvs_deinit(elib_nvs_ctx_t *ctx);
+ * @brief 校验配置、定位当前位置并初始化上下文
+ * @param ctx 用户静态分配的上下文
+ * @param ops 四个介质操作（read/write/erase/is_empty，均不可为 NULL）
+ * @param start_addr 管理区物理起始地址（须按擦除页对齐）
+ * @param managed_size 管理区大小（须为擦除页整数倍，且 >= 擦除页）
+ * @param erase_page_size 介质最小擦除页大小（须非 0）
+ * @param unit_size 数据单元大小（1 <= unit_size <= managed_size，可跨页）
+ * @param erase_default 擦除后字节值（通常 0xFF，须与 is_empty 基准一致）
+ * @return ELIB_NVS_OK，或 ELIB_NVS_ERR_INVALID_PARAM */
+elib_nvs_err_t elib_nvs_init(elib_nvs_ctx_t *ctx, const elib_nvs_ops_t *ops,
+                             uint32_t start_addr, uint32_t managed_size,
+                             uint32_t erase_page_size, uint32_t unit_size,
+                             uint8_t erase_default);
 
 /**
- * @brief 在指定逻辑地址处写入数据
- * @param ctx 上下文指针
- * @param addr 逻辑地址
- * @param data 要写入的数据缓冲区
- * @param len 数据长度
- * @return elib_nvs_err_t 错误码
- */
-elib_nvs_err_t elib_nvs_write(elib_nvs_ctx_t *ctx, uint32_t addr, const void *data, size_t len);
+ * @brief 读取最新一条记录（恒定 unit_size 字节）
+ * @return ELIB_NVS_OK / ELIB_NVS_ERR_EMPTY / ELIB_NVS_ERR_IO / ...
+ *         ELIB_NVS_ERR_NOT_INITIALIZED */
+elib_nvs_err_t elib_nvs_read(elib_nvs_ctx_t *ctx, uint8_t *buf);
 
 /**
- * @brief 从指定逻辑地址读取数据
- * @param ctx 上下文指针
- * @param addr 逻辑地址
- * @param out 输出缓冲区
- * @param len 要读取的数据字节数
- * @return elib_nvs_err_t 错误码
- */
-elib_nvs_err_t elib_nvs_read(elib_nvs_ctx_t *ctx, uint32_t addr, void *out, size_t len);
+ * @brief 追加一条记录；找不到合法槽位时先惰性全域擦除再从头写
+ * @param buf 定长 unit_size 字节的记录内容
+ * @return ELIB_NVS_OK / ELIB_NVS_ERR_IO / ELIB_NVS_ERR_NOT_INITIALIZED */
+elib_nvs_err_t elib_nvs_write(elib_nvs_ctx_t *ctx, const uint8_t *buf);
 
 /**
- * @brief 擦除指定逻辑地址范围
- * @param ctx 上下文指针
- * @param addr 起始逻辑地址
- * @param size 要擦除的字节数
- * @return elib_nvs_err_t 错误码
- */
-elib_nvs_err_t elib_nvs_erase(elib_nvs_ctx_t *ctx, uint32_t addr, size_t size);
+ * @brief 重新定位（重扫描）读/写位置，不做任何物理擦除
+ * @return ELIB_NVS_OK / ELIB_NVS_ERR_NOT_INITIALIZED */
+elib_nvs_err_t elib_nvs_reset(elib_nvs_ctx_t *ctx);
 
 /**
- * @brief 写入数据到下一个可用位置 (MTD模式)
- * @param ctx 上下文指针
- * @param data 要写入的数据缓冲区
- * @param len 数据长度
- * @return elib_nvs_err_t 错误码
- */
-elib_nvs_err_t elib_nvs_mtd_write(elib_nvs_ctx_t *ctx, const void *data, size_t len);
-
-/**
- * @brief 读取最后写入的数据 (MTD模式)
- * @param ctx 上下文指针
- * @param out 输出缓冲区
- * @param len 要读取的数据字节数
- * @return elib_nvs_err_t 错误码
- */
-elib_nvs_err_t elib_nvs_mtd_read(elib_nvs_ctx_t *ctx, void *out, size_t len);
-
-/**
- * @brief 擦除指定位置 (MTD模式)
- * @param ctx 上下文指针
- * @param addr 逻辑地址
- * @param size 要擦除的字节数
- * @return elib_nvs_err_t 错误码
- */
-elib_nvs_err_t elib_nvs_mtd_erase(elib_nvs_ctx_t *ctx, uint32_t addr, size_t size);
-
-/**
- * @brief 获取与上下文关联的用户数据指针
- * @param ctx 上下文指针
- * @return void* 用户数据指针
- */
-void *elib_nvs_get_user_data(elib_nvs_ctx_t *ctx);
+ * @brief 物理擦除整个管理区，回到全新空介质状态
+ * @return ELIB_NVS_OK / ELIB_NVS_ERR_IO / ELIB_NVS_ERR_NOT_INITIALIZED */
+elib_nvs_err_t elib_nvs_erase_all(elib_nvs_ctx_t *ctx);
 
 #ifdef __cplusplus
 }
