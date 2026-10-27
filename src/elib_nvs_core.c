@@ -98,8 +98,7 @@ static void nvs_locate(elib_nvs_ctx_t *ctx) {
 
 elib_nvs_err_t elib_nvs_init(elib_nvs_ctx_t *ctx, const elib_nvs_ops_t *ops,
                              uint32_t start_addr, uint32_t managed_size,
-                             uint32_t erase_page_size, uint32_t unit_size,
-                             uint8_t erase_default) {
+                             uint32_t erase_page_size, uint32_t unit_size) {
     if (ctx == NULL || ops == NULL) {
         return ELIB_NVS_ERR_INVALID_PARAM;
     }
@@ -129,7 +128,6 @@ elib_nvs_err_t elib_nvs_init(elib_nvs_ctx_t *ctx, const elib_nvs_ops_t *ops,
     ctx->managed_size = managed_size;
     ctx->erase_page_size = erase_page_size;
     ctx->unit_size = unit_size;
-    ctx->erase_default = erase_default;
     ctx->unit_count = managed_size / unit_size;
     ctx->bit_flags.initialized = 1;
 

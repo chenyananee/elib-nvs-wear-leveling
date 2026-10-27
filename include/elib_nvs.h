@@ -39,11 +39,12 @@ typedef enum {
  * user's own choosing on failure (the library maps that to
  * ELIB_NVS_ERR_IO). erase is only ever invoked on page-aligned regions.
  *
- * is_empty must report 1 exactly when EVERY byte of [addr, addr+len) is
- * currently equal to the erase_default value configured in init; the
- * base criterion has to match that configuration or the relocation
- * logic cannot work. Implement it the way that suits the media best
- * (memory-mapped compare, word-wise sweep, driver-assisted check...). */
+ * is_empty must report 1 exactly when [addr, addr+len) is empty by the
+ * user's own definition (typically: every byte equals the erased value
+ * the media produces). The library never inspects record bytes itself,
+ * so it takes no configuration for this. Implement it the way that
+ * suits the media best (memory-mapped compare, word-wise sweep,
+ * driver-assisted check...). */
 typedef struct {
     void *user_data; /* forwarded to every op, untouched by the library */
     int     (*read)    (void *ud, uint32_t addr, uint8_t *buf, uint32_t len);
@@ -60,7 +61,6 @@ typedef struct {
     uint32_t managed_size;    /* page-aligned size of the managed region */
     uint32_t erase_page_size; /* smallest erase unit of the media */
     uint32_t unit_size;       /* fixed record size in bytes */
-    uint8_t  erase_default;   /* erased-byte value (usually 0xFF) */
 
     /* runtime state */
     uint32_t unit_count;      /* managed_size / unit_size (>= 1) */
@@ -83,12 +83,10 @@ typedef struct {
  * @param managed_size 管理区大小（须为擦除页整数倍，且 >= 擦除页）
  * @param erase_page_size 介质最小擦除页大小（须非 0）
  * @param unit_size 数据单元大小（1 <= unit_size <= managed_size，可跨页）
- * @param erase_default 擦除后字节值（通常 0xFF，须与 is_empty 基准一致）
  * @return ELIB_NVS_OK，或 ELIB_NVS_ERR_INVALID_PARAM */
 elib_nvs_err_t elib_nvs_init(elib_nvs_ctx_t *ctx, const elib_nvs_ops_t *ops,
                              uint32_t start_addr, uint32_t managed_size,
-                             uint32_t erase_page_size, uint32_t unit_size,
-                             uint8_t erase_default);
+                             uint32_t erase_page_size, uint32_t unit_size);
 
 /**
  * @brief 读取最新一条记录（恒定 unit_size 字节）

@@ -58,9 +58,10 @@ static int my_erase(void *ud, uint32_t addr, uint32_t len) {
 }
 
 static uint8_t my_is_empty(void *ud, uint32_t addr, uint32_t len) {
-    /* 关键约定：[addr, addr+len) 每个 byte == 你在 init 里配的 erase_default
-     * 才能返回 1，否则返回 0。
-     * 基准值必须与 init 配置的 erase_default 完全一致——不然掉电重定位会钉错位置 */
+    /* 关键约定：[addr, addr+len) 按你自己的"空"定义判空——
+     * 典型实现：每个 byte 都等于擦除后的值（如 0xFF）才返回 1，否则返回 0。
+     * 库不读任何记录内容，所以"空"的定义完全由你说了算；
+     * 但基准必须与你的 my_erase 擦出来的值一致——不然掉电重定位会钉错位置 */
     return 1;  /* 按介质最优方式实现：mmio 直接比对 / 字宽扫 / 驱动辅助皆可 */
 }
 
@@ -87,8 +88,7 @@ void app_setup(void) {
                                        0x00100000,    /* start_addr，按擦除页对齐 */
                                        MANAGED_SIZE,  /* 管理域大小，页整数倍 */
                                        ERASE_PAGE_SIZE,
-                                       RECORD_SIZE,
-                                       0xFF);         /* erase_default */
+                                       RECORD_SIZE);
     /* err 非 ELIB_NVS_OK 时按 §校验清单 排查 */
 }
 ```

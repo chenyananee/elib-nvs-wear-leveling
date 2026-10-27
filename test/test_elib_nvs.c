@@ -120,44 +120,44 @@ static void test_init_valid_and_rejects(void) {
 
     /* Valid A-domain config */
     assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A, ERASE_DEFAULT) == ELIB_NVS_OK);
+                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
     assert(ctx.unit_count == N_UNITS_A);
     assert(ctx.bit_flags.initialized == 1);
 
     /* Every rejection rule */
-    assert(elib_nvs_init(NULL, &ops_a, 0, 0, 0, 0, 0) == ELIB_NVS_ERR_INVALID_PARAM);
-    assert(elib_nvs_init(&ctx, NULL, 0, 0, 0, 0, 0) == ELIB_NVS_ERR_INVALID_PARAM);
+    assert(elib_nvs_init(NULL, &ops_a, 0, 0, 0, 0) == ELIB_NVS_ERR_INVALID_PARAM);
+    assert(elib_nvs_init(&ctx, NULL, 0, 0, 0, 0) == ELIB_NVS_ERR_INVALID_PARAM);
     assert(elib_nvs_init(&ctx, &ops_null_read, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A, ERASE_DEFAULT) == ELIB_NVS_ERR_INVALID_PARAM);
+                         PAGE_A, UNIT_A) == ELIB_NVS_ERR_INVALID_PARAM);
     assert(elib_nvs_init(&ctx, &ops_null_write, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A, ERASE_DEFAULT) == ELIB_NVS_ERR_INVALID_PARAM);
+                         PAGE_A, UNIT_A) == ELIB_NVS_ERR_INVALID_PARAM);
     assert(elib_nvs_init(&ctx, &ops_null_erase, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A, ERASE_DEFAULT) == ELIB_NVS_ERR_INVALID_PARAM);
+                         PAGE_A, UNIT_A) == ELIB_NVS_ERR_INVALID_PARAM);
     assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         0, UNIT_A, ERASE_DEFAULT) == ELIB_NVS_ERR_INVALID_PARAM);   /* page 0 */
+                         0, UNIT_A) == ELIB_NVS_ERR_INVALID_PARAM);   /* page 0 */
     assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         PAGE_A, 0, ERASE_DEFAULT) == ELIB_NVS_ERR_INVALID_PARAM);   /* unit 0 */
+                         PAGE_A, 0) == ELIB_NVS_ERR_INVALID_PARAM);   /* unit 0 */
     /* op tables with a NULL is_empty member */
     {
         elib_nvs_ops_t bad = ops_a;
         bad.is_empty = NULL;
         assert(elib_nvs_init(&ctx, &bad, sim_a.base, SIZE_A,
-                             PAGE_A, UNIT_A, ERASE_DEFAULT) == ELIB_NVS_ERR_INVALID_PARAM);
+                             PAGE_A, UNIT_A) == ELIB_NVS_ERR_INVALID_PARAM);
     }
     assert(elib_nvs_init(&ctx, &ops_a, sim_a.base + 1u, SIZE_A, /* unaligned start */
-                         PAGE_A, UNIT_A, ERASE_DEFAULT) == ELIB_NVS_ERR_INVALID_PARAM);
+                         PAGE_A, UNIT_A) == ELIB_NVS_ERR_INVALID_PARAM);
     assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A - 1u, /* unaligned size */
-                         PAGE_A, UNIT_A, ERASE_DEFAULT) == ELIB_NVS_ERR_INVALID_PARAM);
+                         PAGE_A, UNIT_A) == ELIB_NVS_ERR_INVALID_PARAM);
     assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, PAGE_A / 2u, /* size < page */
-                         PAGE_A, UNIT_A, ERASE_DEFAULT) == ELIB_NVS_ERR_INVALID_PARAM);
+                         PAGE_A, UNIT_A) == ELIB_NVS_ERR_INVALID_PARAM);
     assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         PAGE_A, SIZE_A + 1u, ERASE_DEFAULT) == ELIB_NVS_ERR_INVALID_PARAM); /* unit > managed */
+                         PAGE_A, SIZE_A + 1u) == ELIB_NVS_ERR_INVALID_PARAM); /* unit > managed */
     assert(elib_nvs_init(&ctx, &ops_a, 0xFFFFF000u, SIZE_A, /* start + size wraps */
-                         PAGE_A, UNIT_A, ERASE_DEFAULT) == ELIB_NVS_ERR_INVALID_PARAM);
+                         PAGE_A, UNIT_A) == ELIB_NVS_ERR_INVALID_PARAM);
 
     /* n == 1 domain config is valid */
     assert(elib_nvs_init(&ctx, &ops_b, sim_b.base, SIZE_B,
-                         PAGE_A, UNIT_B, ERASE_DEFAULT) == ELIB_NVS_OK);
+                         PAGE_A, UNIT_B) == ELIB_NVS_OK);
     assert(ctx.unit_count == N_UNITS_B);
 
     printf("PASSED\n");
@@ -168,7 +168,7 @@ static void test_scan_fresh_domain(void) {
 
     memset(sim_mem, ERASE_DEFAULT, sizeof(sim_mem));
     assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A, ERASE_DEFAULT) == ELIB_NVS_OK);
+                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
     assert(ctx.bit_flags.has_data == 0);
     assert(ctx.read_unit == 0 && ctx.write_unit == 0);
 
@@ -191,7 +191,7 @@ static void test_scan_partial_domain(void) {
 
     memset(sim_mem, ERASE_DEFAULT, sizeof(sim_mem));
     assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A, ERASE_DEFAULT) == ELIB_NVS_OK);
+                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
 
     /* Three records appended normally */
     fill_record(rec, 0x10); assert(elib_nvs_write(&ctx, rec) == ELIB_NVS_OK);
@@ -203,7 +203,7 @@ static void test_scan_partial_domain(void) {
 
     /* Reboot-style relocation (init again) finds the same positions */
     assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A, ERASE_DEFAULT) == ELIB_NVS_OK);
+                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
     assert(ctx.read_unit == 2 && ctx.write_unit == 3);
     assert(ctx.bit_flags.has_data == 1);
     memset(rec_back, 0, sizeof(rec_back));
@@ -222,7 +222,7 @@ static void test_scan_tail_single_empty(void) {
 
     memset(sim_mem, ERASE_DEFAULT, sizeof(sim_mem));
     assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A, ERASE_DEFAULT) == ELIB_NVS_OK);
+                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
     fill_record(rec, 0x21); assert(elib_nvs_write(&ctx, rec) == ELIB_NVS_OK);
     fill_record(rec, 0x22); assert(elib_nvs_write(&ctx, rec) == ELIB_NVS_OK);
     fill_record(rec, 0x23); assert(elib_nvs_write(&ctx, rec) == ELIB_NVS_OK);
@@ -232,7 +232,7 @@ static void test_scan_tail_single_empty(void) {
 
     /* Reboot: the empty run is exactly one unit (the tail slot) */
     assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A, ERASE_DEFAULT) == ELIB_NVS_OK);
+                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
     assert(ctx.read_unit == 4 && ctx.write_unit == 5);
     memset(rec_back, 0, sizeof(rec_back));
     assert(elib_nvs_read(&ctx, rec_back) == ELIB_NVS_OK);
@@ -257,7 +257,7 @@ static void test_scan_full_domain(void) {
     erase_count = 0;
     memset(sim_mem, ERASE_DEFAULT, sizeof(sim_mem));
     assert(elib_nvs_init(&ctx, &ops_counting, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A, ERASE_DEFAULT) == ELIB_NVS_OK);
+                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
     {
         uint8_t i;
         for (i = 0; i < N_UNITS_A; i++) {
@@ -273,7 +273,7 @@ static void test_scan_full_domain(void) {
 
     /* Reboot in the full state: read = last unit, write = head */
     assert(elib_nvs_init(&ctx, &ops_counting, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A, ERASE_DEFAULT) == ELIB_NVS_OK);
+                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
     assert(ctx.read_unit == N_UNITS_A - 1 && ctx.write_unit == 0);
     assert(ctx.bit_flags.has_data == 1);
     memset(rec_back, 0, sizeof(rec_back));
@@ -298,7 +298,7 @@ static void test_write_skips_illegal_windows(void) {
 
     memset(sim_mem, ERASE_DEFAULT, sizeof(sim_mem));
     assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A, ERASE_DEFAULT) == ELIB_NVS_OK);
+                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
 
     /* Record A lands in unit 0 */
     fill_record(rec, 0x40);
@@ -320,7 +320,7 @@ static void test_write_skips_illegal_windows(void) {
     /* Reboot: the scan skips both illegal windows ((0,1) and (1,2)) and
      * seats at (2,3): read = unit 2 = the true newest record */
     assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A, ERASE_DEFAULT) == ELIB_NVS_OK);
+                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
     assert(ctx.read_unit == 2 && ctx.write_unit == 3);
     memset(rec_back, 0, sizeof(rec_back));
     assert(elib_nvs_read(&ctx, rec_back) == ELIB_NVS_OK);
@@ -335,7 +335,7 @@ static void test_n1_domain_rolls(void) {
     erase_count = 0;
     memset(sim_mem, ERASE_DEFAULT, sizeof(sim_mem));
     assert(elib_nvs_init(&ctx, &ops_counting, sim_b.base, SIZE_B,
-                         PAGE_A, UNIT_B, ERASE_DEFAULT) == ELIB_NVS_OK);
+                         PAGE_A, UNIT_B) == ELIB_NVS_OK);
     {
         uint8_t rec1[UNIT_B];
         memset(rec1, 0xA5, sizeof(rec1));
@@ -364,12 +364,12 @@ static void test_io_errors_map(void) {
 
     memset(sim_mem, ERASE_DEFAULT, sizeof(sim_mem));
     assert(elib_nvs_init(&ctx, &ops_fail_write, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A, ERASE_DEFAULT) == ELIB_NVS_OK);
+                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
     fill_record(rec, 0x60);
     assert(elib_nvs_write(&ctx, rec) == ELIB_NVS_ERR_IO);
 
     assert(elib_nvs_init(&ctx, &ops_fail_read, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A, ERASE_DEFAULT) == ELIB_NVS_OK);
+                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
     {
         uint8_t rec2[UNIT_A];
         fill_record(rec2, 0x61);
@@ -398,7 +398,7 @@ static void test_erase_all(void) {
 
     memset(sim_mem, ERASE_DEFAULT, sizeof(sim_mem));
     assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A, ERASE_DEFAULT) == ELIB_NVS_OK);
+                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
     fill_record(rec, 0x70); assert(elib_nvs_write(&ctx, rec) == ELIB_NVS_OK);
     fill_record(rec, 0x71); assert(elib_nvs_write(&ctx, rec) == ELIB_NVS_OK);
     assert(ctx.bit_flags.has_data == 1);
@@ -424,7 +424,7 @@ static void test_null_buf_guard(void) {
 
     memset(sim_mem, ERASE_DEFAULT, sizeof(sim_mem));
     assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A, ERASE_DEFAULT) == ELIB_NVS_OK);
+                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
     assert(elib_nvs_write(&ctx, NULL) == ELIB_NVS_ERR_INVALID_PARAM);
     assert(elib_nvs_read(&ctx, NULL) == ELIB_NVS_ERR_INVALID_PARAM);
 
