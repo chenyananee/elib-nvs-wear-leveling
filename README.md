@@ -1,3 +1,5 @@
+**简体中文** | [English](README.en.md)
+
 # elib-nvs-wear-leveling
 
 面向 flash / EEPROM 类介质的**轻量磨损均衡库**：不信 CRC、不做磨损表、不建目录树——
