@@ -351,6 +351,52 @@ static void test_io_errors_and_guards(void) {
     printf("PASSED\n");
 }
 
+static void test_minimal_config(void) {
+    printf("Test: minimal config (N=2, slot=6, user=1)... ");
+
+    memset(g_mem, ERASE_FILL, sizeof(g_mem));
+    /* slot 6 = 5-byte header + 1 user byte, no padding */
+    CHECK_EQ(elib_nvs_init(&ctx, &ops, BASE, 12u, 6u, 1u), ELIB_NVS_OK);
+    CHECK_EQ(ctx.slot_count, 2u);
+
+    {
+        uint32_t i;
+        for (i = 0; i < 5u; ++i) {
+            uint8_t one = (uint8_t)(0xA0u + i);
+            CHECK_EQ(elib_nvs_write(&ctx, &one), ELIB_NVS_OK);
+            CHECK_EQ(ctx.read_slot, i % 2u);
+            CHECK_EQ(ctx.write_slot, (i + 1u) % 2u);
+            CHECK_EQ(elib_nvs_read(&ctx, rec_back), ELIB_NVS_OK);
+            CHECK_EQ(rec_back[0], one);
+        }
+    }
+
+    printf("PASSED\n");
+}
+
+static void test_managed_not_multiple(void) {
+    printf("Test: managed_size is not a multiple of slot_size... ");
+
+    memset(g_mem, ERASE_FILL, sizeof(g_mem));
+    /* 100 / 16 = 6 slots, 4 trailing bytes stay idle */
+    CHECK_EQ(elib_nvs_init(&ctx, &ops, BASE, 100u, 16u, 8u), ELIB_NVS_OK);
+    CHECK_EQ(ctx.slot_count, 6u);
+
+    {
+        uint32_t i;
+        for (i = 0; i < 8u; ++i) {
+            fill_record(rec, (uint8_t)(0xB0u + i));
+            CHECK_EQ(elib_nvs_write(&ctx, rec), ELIB_NVS_OK);
+            CHECK_EQ(ctx.read_slot, i % 6u);
+            memset(rec_back, 0, sizeof(rec_back));
+            CHECK_EQ(elib_nvs_read(&ctx, rec_back), ELIB_NVS_OK);
+            CHECK_EQ(rec_back[0], (uint8_t)(0xB0u + i));
+        }
+    }
+
+    printf("PASSED\n");
+}
+
 static void test_power_loss_matrix(void) {
     printf("Test: torn writes never expose half-written data... ");
 
@@ -426,6 +472,8 @@ int main(void) {
     test_seq_wrap();
     test_erase_polarity_zero();
     test_io_errors_and_guards();
+    test_minimal_config();
+    test_managed_not_multiple();
     test_power_loss_matrix();
 
     if (g_failures != 0) {
