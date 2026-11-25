@@ -1,137 +1,138 @@
 /* elib_nvs_core.c - NVS Wear Leveling implementation
  *
- * Single-file implementation of the append-only wear leveling model.
- * Terminology:
- *   unit        - one fixed logical record slot, unit_size bytes
- *   unit index  - 0-based, relative to the start of the managed region
- *   legal slot  - a unit on which the next payload may land:
- *                 (k, k+1) both empty, or k is the last unit and empty
- *   full        - no legal slot anywhere: lazy global erase is due
+ * One slot (slot_size bytes):
  *
- * Positioning invariant (runtime and reboot agree on the same predicate):
- * the write pointer always rests on a verified-empty unit, and there is
- * no empty unit anywhere between the start of the filled prefix and the
- * landing slot - illegal windows (containing a non-empty unit, e.g. an
- * out-of-library orphan) are skipped by the shared seek, which is why no
- * dirt-marking writes are ever needed.
+ *   +----------+----------+----------------------+-----------+
+ *   | seq (4B) | magic 1B | user data user_size  | padding   |
+ *   +----------+----------+----------------------+-----------+
+ *    \________ library header (5B) ________/
+ *
+ * Write order is "user data first, header array last", so the magic byte (the
+ * last byte of the header) is the commit point: a slot only counts as valid
+ * once its data is already in place.
+ *
+ * Locating the newest record is a FULL scan. A slot is a candidate only when
+ * its magic byte reads 0xA5; among the candidates the greatest seq wins under
+ * a wrap-safe modular comparison. Scanning must never stop at the first
+ * invalid header: after a wrap a torn write can leave slot 0 invalid while the
+ * slots behind it still hold valid (older) records.
  */
 #include <stddef.h>
 
 #include "elib_nvs.h"
 
-/* ---- helpers ---- */
-
-/* Physical address of unit index */
-static uint32_t unit_addr(const elib_nvs_ctx_t *ctx, uint32_t idx) {
-    return ctx->start_addr + idx * ctx->unit_size;
+/* Physical address of slot index */
+static uint32_t slot_addr(const elib_nvs_ctx_t *ctx, uint32_t idx) {
+    return ctx->start_addr + idx * ctx->slot_size;
 }
 
-/* Shared slot seeker. Scans unit windows starting at "from":
- *   (k, k+1) both empty                  -> slot = k
- *   k is the last unit and empty         -> single-slot clause, slot = k
- *   slid off the end without a slot      -> full (out_slot = 0)
- * Returns 0 when a slot was found, 1 when the domain is full.
- * Read-only: never performs a media write. */
-static uint8_t nvs_seek(const elib_nvs_ctx_t *ctx, uint32_t from,
-                        uint32_t *out_slot) {
-    const elib_nvs_ops_t *ops = &ctx->ops;
-
-    if (from >= ctx->unit_count) {
-        return 1; /* nothing behind the pointer can hold a slot */
-    }
-
-    {
-        uint32_t k = from;
-        for (;;) {
-            if (k + 1 < ctx->unit_count) {
-                if (ops->is_empty(ops->user_data, unit_addr(ctx, k),
-                                  ctx->unit_size) &&
-                    ops->is_empty(ops->user_data, unit_addr(ctx, k + 1),
-                                  ctx->unit_size)) {
-                    *out_slot = k;
-                    return 0;
-                }
-            } else {
-                /* Last unit: "space for fewer than two" - one empty
-                 * unit still qualifies as a legal slot */
-                if (ops->is_empty(ops->user_data, unit_addr(ctx, k),
-                                  ctx->unit_size)) {
-                    *out_slot = k;
-                    return 0;
-                }
-                /* Last unit holds data and nothing follows: the domain
-                 * is full. The caller decides the full-domain outcome */
-                *out_slot = 0;
-                return 1;
-            }
-            k++;
-        }
-    }
+/* Wrap-safe "a is newer than b" for the 32-bit sequence numbers. Valid as long
+ * as the live records span less than half of the counter range, which always
+ * holds here because there are only slot_count of them. */
+static int seq_is_greater(uint32_t a, uint32_t b) {
+    return (int32_t)(a - b) > 0;
 }
 
-/* Position the context by scanning. Purely read-only, shared by init
- * and reset. Three entry outcomes:
- *   slot k > 0  -> newest record = unit k-1, next write = unit k
- *   slot k == 0 -> fresh/empty domain: no record, next write = unit 0
- *   full        -> newest record = last unit, next write = head
- *                  (every library fold resets at the head, so a fully
- *                  populated domain was filled 0..N-1 in order) */
-static void nvs_locate(elib_nvs_ctx_t *ctx) {
-    uint32_t slot;
+/* Read the 5-byte header of one slot. Returns 0 on success, -1 on I/O error.
+ * Sets *valid to 1 when the magic byte marks a written slot, and *seq to the
+ * stored sequence number (meaningful only when *valid is 1). */
+static int read_header(const elib_nvs_ctx_t *ctx, uint32_t idx,
+                       uint32_t *seq, uint8_t *valid) {
+    uint8_t hdr[ELIB_NVS_HDR_SIZE];
 
-    if (!nvs_seek(ctx, 0, &slot)) {
-        ctx->write_unit = slot;
-        if (slot > 0) {
-            ctx->read_unit = slot - 1;
-            ctx->bit_flags.has_data = 1;
-        } else {
-            ctx->bit_flags.has_data = 0;
+    if (ctx->ops.read(ctx->ops.user_data, slot_addr(ctx, idx), hdr,
+                      ELIB_NVS_HDR_SIZE) != 0) {
+        return -1;
+    }
+    *valid = (hdr[4] == ELIB_NVS_MAGIC) ? 1u : 0u;
+    *seq = (uint32_t)hdr[0] |
+           ((uint32_t)hdr[1] << 8) |
+           ((uint32_t)hdr[2] << 16) |
+           ((uint32_t)hdr[3] << 24);
+    return 0;
+}
+
+/* Full-scan relocation. Purely read-only, shared by init and reset.
+ * Returns 0 on success and -1 when a header read failed (the context is left
+ * untouched in that case). */
+static int nvs_locate(elib_nvs_ctx_t *ctx) {
+    uint32_t i;
+    uint32_t best_slot = 0u;
+    uint32_t best_seq = 0u;
+    uint8_t best_valid = 0u;
+
+    for (i = 0u; i < ctx->slot_count; ++i) {
+        uint32_t seq;
+        uint8_t valid;
+
+        if (read_header(ctx, i, &seq, &valid) != 0) {
+            return -1;
         }
+        if (!valid) {
+            continue;
+        }
+        if (!best_valid || seq_is_greater(seq, best_seq)) {
+            best_seq = seq;
+            best_slot = i;
+            best_valid = 1u;
+        }
+    }
+
+    if (best_valid) {
+        ctx->read_slot = best_slot;
+        ctx->write_slot = (best_slot + 1u < ctx->slot_count)
+                              ? best_slot + 1u : 0u;
+        ctx->next_seq = best_seq + 1u;
+        ctx->bit_flags.has_data = 1u;
     } else {
-        ctx->read_unit = ctx->unit_count - 1;
-        ctx->write_unit = 0;
-        ctx->bit_flags.has_data = 1;
+        ctx->read_slot = 0u;
+        ctx->write_slot = 0u;
+        ctx->next_seq = 1u;
+        ctx->bit_flags.has_data = 0u;
     }
+    return 0;
 }
 
 /* ---- API ---- */
 
 elib_nvs_err_t elib_nvs_init(elib_nvs_ctx_t *ctx, const elib_nvs_ops_t *ops,
                              uint32_t start_addr, uint32_t managed_size,
-                             uint32_t erase_page_size, uint32_t unit_size) {
+                             uint32_t slot_size, uint32_t user_size) {
+    uint32_t slot_count;
+
     if (ctx == NULL || ops == NULL) {
         return ELIB_NVS_ERR_INVALID_PARAM;
     }
-    if (ops->read == NULL || ops->write == NULL || ops->erase == NULL ||
-        ops->is_empty == NULL) {
+    if (ops->read == NULL || ops->write == NULL) {
         return ELIB_NVS_ERR_INVALID_PARAM;
     }
-    if (erase_page_size == 0 || unit_size == 0) {
-        return ELIB_NVS_ERR_INVALID_PARAM;
-    }
-    if ((start_addr % erase_page_size) != 0 ||
-        (managed_size % erase_page_size) != 0) {
-        return ELIB_NVS_ERR_INVALID_PARAM;
-    }
-    if (managed_size < erase_page_size) {
-        return ELIB_NVS_ERR_INVALID_PARAM;
-    }
-    if (unit_size > managed_size) {
+    /* Overflow-safe form of "ELIB_NVS_HDR_SIZE + user_size <= slot_size" */
+    if (user_size == 0u || slot_size < ELIB_NVS_HDR_SIZE ||
+        slot_size - ELIB_NVS_HDR_SIZE < user_size) {
         return ELIB_NVS_ERR_INVALID_PARAM;
     }
     if ((uint64_t)start_addr + (uint64_t)managed_size > 0xFFFFFFFFULL) {
-        return ELIB_NVS_ERR_INVALID_PARAM; /* region must not wrap */
+        return ELIB_NVS_ERR_INVALID_PARAM;
+    }
+
+    slot_count = managed_size / slot_size;
+    if (slot_count < 2u) {
+        return ELIB_NVS_ERR_INVALID_PARAM;
     }
 
     ctx->ops = *ops;
     ctx->start_addr = start_addr;
     ctx->managed_size = managed_size;
-    ctx->erase_page_size = erase_page_size;
-    ctx->unit_size = unit_size;
-    ctx->unit_count = managed_size / unit_size;
-    ctx->bit_flags.initialized = 1;
+    ctx->slot_size = slot_size;
+    ctx->user_size = user_size;
+    ctx->slot_count = slot_count;
+    ctx->bit_flags.initialized = 1u;
+    ctx->bit_flags.has_data = 0u;
 
-    nvs_locate(ctx);
+    if (nvs_locate(ctx) != 0) {
+        ctx->bit_flags.initialized = 0u;
+        return ELIB_NVS_ERR_IO;
+    }
     return ELIB_NVS_OK;
 }
 
@@ -145,15 +146,18 @@ elib_nvs_err_t elib_nvs_read(elib_nvs_ctx_t *ctx, uint8_t *buf) {
     if (!ctx->bit_flags.has_data) {
         return ELIB_NVS_ERR_EMPTY;
     }
-    if (ctx->ops.read(ctx->ops.user_data, unit_addr(ctx, ctx->read_unit),
-                      buf, ctx->unit_size) != 0) {
+    if (ctx->ops.read(ctx->ops.user_data,
+                      slot_addr(ctx, ctx->read_slot) + ELIB_NVS_HDR_SIZE,
+                      buf, ctx->user_size) != 0) {
         return ELIB_NVS_ERR_IO;
     }
     return ELIB_NVS_OK;
 }
 
 elib_nvs_err_t elib_nvs_write(elib_nvs_ctx_t *ctx, const uint8_t *buf) {
+    uint8_t hdr[ELIB_NVS_HDR_SIZE];
     uint32_t slot;
+    uint32_t seq;
 
     if (ctx == NULL || !ctx->bit_flags.initialized) {
         return ELIB_NVS_ERR_NOT_INITIALIZED;
@@ -162,27 +166,31 @@ elib_nvs_err_t elib_nvs_write(elib_nvs_ctx_t *ctx, const uint8_t *buf) {
         return ELIB_NVS_ERR_INVALID_PARAM;
     }
 
-    if (nvs_seek(ctx, ctx->write_unit, &slot)) {
-        /* Full: lazy global erase fires only now - the record in the
-         * last unit has been readable right up to this replacement */
-        if (ctx->ops.erase(ctx->ops.user_data, ctx->start_addr,
-                           ctx->managed_size) != 0) {
-            return ELIB_NVS_ERR_IO; /* seek re-locates on the next write */
-        }
-        ctx->bit_flags.has_data = 0; /* old records are gone now */
-        slot = 0;
+    slot = ctx->write_slot;
+    seq = ctx->next_seq;
+
+    /* 1) user data: a slot is only marked valid once its data is in place */
+    if (ctx->ops.write(ctx->ops.user_data,
+                       slot_addr(ctx, slot) + ELIB_NVS_HDR_SIZE,
+                       buf, ctx->user_size) != 0) {
+        return ELIB_NVS_ERR_IO;
     }
 
-    if (ctx->ops.write(ctx->ops.user_data, unit_addr(ctx, slot),
-                       buf, ctx->unit_size) != 0) {
-        return ELIB_NVS_ERR_IO; /* previous record (if any) still reads */
+    /* 2) header array [seq][magic]; magic is the last byte = commit point */
+    hdr[0] = (uint8_t)(seq & 0xFFu);
+    hdr[1] = (uint8_t)((seq >> 8) & 0xFFu);
+    hdr[2] = (uint8_t)((seq >> 16) & 0xFFu);
+    hdr[3] = (uint8_t)((seq >> 24) & 0xFFu);
+    hdr[4] = (uint8_t)ELIB_NVS_MAGIC;
+    if (ctx->ops.write(ctx->ops.user_data, slot_addr(ctx, slot), hdr,
+                       ELIB_NVS_HDR_SIZE) != 0) {
+        return ELIB_NVS_ERR_IO;
     }
 
-    ctx->read_unit = slot;
-    ctx->bit_flags.has_data = 1;
-    /* The slot's partner unit was verified empty inside the seek (or the
-     * domain was just erased), so the advance needs no further check */
-    ctx->write_unit = (slot + 1 < ctx->unit_count) ? (slot + 1) : 0;
+    ctx->read_slot = slot;
+    ctx->bit_flags.has_data = 1u;
+    ctx->write_slot = (slot + 1u < ctx->slot_count) ? slot + 1u : 0u;
+    ctx->next_seq = seq + 1u;
     return ELIB_NVS_OK;
 }
 
@@ -190,19 +198,8 @@ elib_nvs_err_t elib_nvs_reset(elib_nvs_ctx_t *ctx) {
     if (ctx == NULL || !ctx->bit_flags.initialized) {
         return ELIB_NVS_ERR_NOT_INITIALIZED;
     }
-    nvs_locate(ctx);
-    return ELIB_NVS_OK;
-}
-
-elib_nvs_err_t elib_nvs_erase_all(elib_nvs_ctx_t *ctx) {
-    if (ctx == NULL || !ctx->bit_flags.initialized) {
-        return ELIB_NVS_ERR_NOT_INITIALIZED;
-    }
-    if (ctx->ops.erase(ctx->ops.user_data, ctx->start_addr,
-                       ctx->managed_size) != 0) {
+    if (nvs_locate(ctx) != 0) {
         return ELIB_NVS_ERR_IO;
     }
-    ctx->write_unit = 0;
-    ctx->bit_flags.has_data = 0;
     return ELIB_NVS_OK;
 }

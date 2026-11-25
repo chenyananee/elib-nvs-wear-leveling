@@ -1,37 +1,57 @@
-/* test_elib_nvs.c - RAM-simulated media test suite
+/* test_elib_nvs.c - RAM-simulated medium test suite (v3)
  *
- * The suite only compiles on this host toolchain (-Werror, no run);
- * every case is verified by static timeline tracing. The simulated
- * media is a plain byte array: write overlays bytes, erase fills with
- * the erase default, is_empty sweeps for it. */
-#include <assert.h>
+ * The simulated medium is a plain byte array with only the two ops the
+ * library uses (read / write). Erase polarity is simulated by pre-filling the
+ * array with the "erased" value: 0xFF for flash-like media, 0x00 for media
+ * that erase to zero.
+ */
 #include <stdio.h>
 #include <string.h>
 
 #include "elib_nvs.h"
 
-#define SIM_OK        0
-#define SIM_FAIL      (-7) /* arbitrary user-space failure code */
+#define SIM_OK   0
+#define SIM_FAIL (-7)
 
-#define ERASE_DEFAULT 0xFF
-#define PAGE_A        256u
-#define UNIT_A        640u   /* 6 full units + 256B zero remainder */
-#define N_UNITS_A     6u
-#define SIZE_A        (UNIT_A * N_UNITS_A + 256u) /* 4096 */
-#define UNIT_B        512u   /* n == 1 degenerate domain */
-#define N_UNITS_B     1u
-#define SIZE_B        (UNIT_B * N_UNITS_B)        /* 512 */
+#define ERASE_FILL 0xFFu
 
-/* Simulated media: A at offset 0, n==1 domain B at offset SIZE_A */
-static uint8_t sim_mem[SIZE_A + SIZE_B];
+#define SLOT      16u                       /* slot stride: 5 + 8 <= 16 */
+#define USER      8u                        /* user payload per slot */
+#define N_SLOTS   6u                        /* slot count */
+#define MANAGED   (SLOT * N_SLOTS)          /* 96 */
+#define BASE      0x1000u
+#define MEM_SIZE  256u
+
+static int g_failures;
+
+#define CHECK(cond)                                                        \
+    do {                                                                   \
+        if (!(cond)) {                                                     \
+            printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);          \
+            ++g_failures;                                                  \
+        }                                                                  \
+    } while (0)
+
+#define CHECK_EQ(actual, expected)                                         \
+    do {                                                                   \
+        long a_ = (long)(actual);                                          \
+        long e_ = (long)(expected);                                        \
+        if (a_ != e_) {                                                    \
+            printf("FAIL %s:%d: %s == %s (%ld != %ld)\n",                  \
+                   __FILE__, __LINE__, #actual, #expected, a_, e_);        \
+            ++g_failures;                                                  \
+        }                                                                  \
+    } while (0)
+
+/* ---- simulated medium ---- */
 
 typedef struct {
     uint32_t base;
     uint8_t *mem;
 } sim_t;
 
-static sim_t sim_a = { 0x1000u, &sim_mem[0] };
-static sim_t sim_b = { 0x2000u, &sim_mem[SIZE_A] };
+static uint8_t g_mem[MEM_SIZE];
+static sim_t sim = { BASE, g_mem };
 
 static int sim_read(void *ud, uint32_t addr, uint8_t *buf, uint32_t len) {
     const sim_t *s = (const sim_t *)ud;
@@ -39,410 +59,379 @@ static int sim_read(void *ud, uint32_t addr, uint8_t *buf, uint32_t len) {
     return SIM_OK;
 }
 
-static int sim_write(void *ud, uint32_t addr, const uint8_t *buf, uint32_t len) {
+static int sim_write(void *ud, uint32_t addr, const uint8_t *buf,
+                     uint32_t len) {
     sim_t *s = (sim_t *)ud;
     memcpy(s->mem + (addr - s->base), buf, len);
     return SIM_OK;
 }
 
-static int sim_erase(void *ud, uint32_t addr, uint32_t len) {
-    sim_t *s = (sim_t *)ud;
-    memset(s->mem + (addr - s->base), ERASE_DEFAULT, len);
-    return SIM_OK;
-}
+static const elib_nvs_ops_t ops = { &sim, sim_read, sim_write };
 
-static uint8_t sim_is_empty(void *ud, uint32_t addr, uint32_t len) {
-    const sim_t *s = (const sim_t *)ud;
-    uint32_t off = addr - s->base;
-    uint32_t i;
-    for (i = 0; i < len; i++) {
-        if (s->mem[off + i] != ERASE_DEFAULT) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
-static const elib_nvs_ops_t ops_a = {
-    &sim_a, sim_read, sim_write, sim_erase, sim_is_empty,
-};
-static const elib_nvs_ops_t ops_b = {
-    &sim_b, sim_read, sim_write, sim_erase, sim_is_empty,
-};
-
-/* op stubs that fail, for I/O-error mapping tests */
+/* failing ops */
 static int fail_read(void *ud, uint32_t addr, uint8_t *buf, uint32_t len) {
     (void)ud; (void)addr; (void)buf; (void)len;
     return SIM_FAIL;
 }
-static int fail_write(void *ud, uint32_t addr, const uint8_t *buf, uint32_t len) {
+
+static int fail_write(void *ud, uint32_t addr, const uint8_t *buf,
+                      uint32_t len) {
     (void)ud; (void)addr; (void)buf; (void)len;
     return SIM_FAIL;
 }
-static const elib_nvs_ops_t ops_fail_read  = { &sim_a, fail_read,  sim_write, sim_erase, sim_is_empty };
-static const elib_nvs_ops_t ops_fail_write = { &sim_a, sim_read,  fail_write, sim_erase, sim_is_empty };
 
-/* op tables with NULL members, for the init-rejection test */
-static const elib_nvs_ops_t ops_null_read   = { &sim_a, NULL, sim_write, sim_erase, sim_is_empty };
-static const elib_nvs_ops_t ops_null_write  = { &sim_a, sim_read, NULL,  sim_erase, sim_is_empty };
-static const elib_nvs_ops_t ops_null_erase  = { &sim_a, sim_read, sim_write, NULL, sim_is_empty };
+static const elib_nvs_ops_t ops_fail_read  = { &sim, fail_read,  sim_write };
+static const elib_nvs_ops_t ops_fail_write = { &sim, sim_read,   fail_write };
+static const elib_nvs_ops_t ops_null_read  = { &sim, NULL,       sim_write };
+static const elib_nvs_ops_t ops_null_write = { &sim, sim_read,   NULL };
 
-/* Physical address of unit "idx" inside the simulated A domain */
-static uint32_t unit_addr_of(uint32_t idx) {
-    return sim_a.base + idx * UNIT_A;
+/* power-loss injection: only g_budget more bytes may be committed */
+static uint32_t g_budget;
+static const uint32_t BUDGET_INF = 0xFFFFFFFFu;
+
+static int budget_write(void *ud, uint32_t addr, const uint8_t *buf,
+                        uint32_t len) {
+    sim_t *s = (sim_t *)ud;
+
+    if (g_budget >= len) {
+        memcpy(s->mem + (addr - s->base), buf, len);
+        g_budget -= len;
+        return SIM_OK;
+    }
+    if (g_budget > 0u) {
+        memcpy(s->mem + (addr - s->base), buf, g_budget);
+        g_budget = 0u;
+    }
+    return SIM_FAIL; /* the write did not complete */
 }
 
-/* Record payload helpers: content = seed, rest = 0xA5 pattern */
+static const elib_nvs_ops_t ops_budget = { &sim, sim_read, budget_write };
+
+/* ---- helpers ---- */
+
+static elib_nvs_ctx_t ctx;
+static uint8_t rec[USER];
+static uint8_t rec_back[USER];
+
 static void fill_record(uint8_t *buf, uint8_t seed) {
-    memset(buf, 0xA5, UNIT_A);
+    memset(buf, 0x5A, USER);
     buf[0] = seed;
 }
 
-static uint32_t erase_count;
-static int counting_erase(void *ud, uint32_t addr, uint32_t len) {
-    erase_count++;
-    return sim_erase(ud, addr, len);
+/* poke a complete, valid header for a slot (bypasses the library) */
+static void poke_header(uint32_t slot, uint32_t seq) {
+    uint8_t *p = g_mem + slot * SLOT;
+    p[0] = (uint8_t)(seq & 0xFFu);
+    p[1] = (uint8_t)((seq >> 8) & 0xFFu);
+    p[2] = (uint8_t)((seq >> 16) & 0xFFu);
+    p[3] = (uint8_t)((seq >> 24) & 0xFFu);
+    p[4] = (uint8_t)ELIB_NVS_MAGIC;
 }
-static const elib_nvs_ops_t ops_counting = {
-    &sim_a, sim_read, sim_write, counting_erase, sim_is_empty,
-};
-
-static elib_nvs_ctx_t ctx;
-static uint8_t rec[UNIT_A];
-static uint8_t rec_back[UNIT_A];
 
 /* ---- tests ---- */
 
 static void test_init_valid_and_rejects(void) {
     printf("Test: init validates the configuration... ");
 
-    memset(sim_mem, ERASE_DEFAULT, sizeof(sim_mem));
+    memset(g_mem, ERASE_FILL, sizeof(g_mem));
 
-    /* Valid A-domain config */
-    assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
-    assert(ctx.unit_count == N_UNITS_A);
-    assert(ctx.bit_flags.initialized == 1);
+    CHECK_EQ(elib_nvs_init(&ctx, &ops, BASE, MANAGED, SLOT, USER),
+             ELIB_NVS_OK);
+    CHECK_EQ(ctx.slot_count, N_SLOTS);
+    CHECK_EQ(ctx.bit_flags.initialized, 1);
+    CHECK_EQ(ctx.bit_flags.has_data, 0);
 
-    /* Every rejection rule */
-    assert(elib_nvs_init(NULL, &ops_a, 0, 0, 0, 0) == ELIB_NVS_ERR_INVALID_PARAM);
-    assert(elib_nvs_init(&ctx, NULL, 0, 0, 0, 0) == ELIB_NVS_ERR_INVALID_PARAM);
-    assert(elib_nvs_init(&ctx, &ops_null_read, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A) == ELIB_NVS_ERR_INVALID_PARAM);
-    assert(elib_nvs_init(&ctx, &ops_null_write, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A) == ELIB_NVS_ERR_INVALID_PARAM);
-    assert(elib_nvs_init(&ctx, &ops_null_erase, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A) == ELIB_NVS_ERR_INVALID_PARAM);
-    assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         0, UNIT_A) == ELIB_NVS_ERR_INVALID_PARAM);   /* page 0 */
-    assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         PAGE_A, 0) == ELIB_NVS_ERR_INVALID_PARAM);   /* unit 0 */
-    /* op tables with a NULL is_empty member */
+    CHECK_EQ(elib_nvs_init(NULL, &ops, BASE, MANAGED, SLOT, USER),
+             ELIB_NVS_ERR_INVALID_PARAM);
+    CHECK_EQ(elib_nvs_init(&ctx, NULL, BASE, MANAGED, SLOT, USER),
+             ELIB_NVS_ERR_INVALID_PARAM);
+    CHECK_EQ(elib_nvs_init(&ctx, &ops_null_read, BASE, MANAGED, SLOT, USER),
+             ELIB_NVS_ERR_INVALID_PARAM);
+    CHECK_EQ(elib_nvs_init(&ctx, &ops_null_write, BASE, MANAGED, SLOT, USER),
+             ELIB_NVS_ERR_INVALID_PARAM);
+
+    /* user_size == 0 */
+    CHECK_EQ(elib_nvs_init(&ctx, &ops, BASE, MANAGED, SLOT, 0u),
+             ELIB_NVS_ERR_INVALID_PARAM);
+    /* header + user does not fit the slot (5 + 8 > 12) */
+    CHECK_EQ(elib_nvs_init(&ctx, &ops, BASE, MANAGED, 12u, USER),
+             ELIB_NVS_ERR_INVALID_PARAM);
+    /* slot_size smaller than the header */
+    CHECK_EQ(elib_nvs_init(&ctx, &ops, BASE, MANAGED, 4u, 1u),
+             ELIB_NVS_ERR_INVALID_PARAM);
+    /* slot count < 2 */
+    CHECK_EQ(elib_nvs_init(&ctx, &ops, BASE, SLOT, SLOT, USER),
+             ELIB_NVS_ERR_INVALID_PARAM);
+    /* start + size wraps the 32-bit address space */
+    CHECK_EQ(elib_nvs_init(&ctx, &ops, 0xFFFFFFC0u, MANAGED, SLOT, USER),
+             ELIB_NVS_ERR_INVALID_PARAM);
+
+    printf("PASSED\n");
+}
+
+static void test_fresh_domain(void) {
+    printf("Test: fresh domain starts empty then accepts writes... ");
+
+    memset(g_mem, ERASE_FILL, sizeof(g_mem));
+    CHECK_EQ(elib_nvs_init(&ctx, &ops, BASE, MANAGED, SLOT, USER),
+             ELIB_NVS_OK);
+    CHECK_EQ(ctx.bit_flags.has_data, 0);
+    CHECK_EQ(ctx.read_slot, 0);
+    CHECK_EQ(ctx.write_slot, 0);
+    CHECK_EQ(elib_nvs_read(&ctx, rec_back), ELIB_NVS_ERR_EMPTY);
+
+    fill_record(rec, 0x11);
+    CHECK_EQ(elib_nvs_write(&ctx, rec), ELIB_NVS_OK);
+    CHECK_EQ(ctx.read_slot, 0);
+    CHECK_EQ(ctx.write_slot, 1);
+    CHECK_EQ(ctx.bit_flags.has_data, 1);
+
+    memset(rec_back, 0, sizeof(rec_back));
+    CHECK_EQ(elib_nvs_read(&ctx, rec_back), ELIB_NVS_OK);
+    CHECK_EQ(memcmp(rec_back, rec, USER), 0);
+
+    printf("PASSED\n");
+}
+
+static void test_sequential_and_reboot(void) {
+    printf("Test: sequential writes survive reboot and reset... ");
+
+    memset(g_mem, ERASE_FILL, sizeof(g_mem));
+    CHECK_EQ(elib_nvs_init(&ctx, &ops, BASE, MANAGED, SLOT, USER),
+             ELIB_NVS_OK);
+
+    fill_record(rec, 0x21); CHECK_EQ(elib_nvs_write(&ctx, rec), ELIB_NVS_OK);
+    fill_record(rec, 0x22); CHECK_EQ(elib_nvs_write(&ctx, rec), ELIB_NVS_OK);
+    fill_record(rec, 0x23); CHECK_EQ(elib_nvs_write(&ctx, rec), ELIB_NVS_OK);
+    CHECK_EQ(ctx.read_slot, 2);
+    CHECK_EQ(ctx.write_slot, 3);
+
+    /* reboot-style relocation */
+    CHECK_EQ(elib_nvs_init(&ctx, &ops, BASE, MANAGED, SLOT, USER),
+             ELIB_NVS_OK);
+    CHECK_EQ(ctx.read_slot, 2);
+    CHECK_EQ(ctx.write_slot, 3);
+    CHECK_EQ(ctx.bit_flags.has_data, 1);
+    memset(rec_back, 0, sizeof(rec_back));
+    CHECK_EQ(elib_nvs_read(&ctx, rec_back), ELIB_NVS_OK);
+    CHECK_EQ(rec_back[0], 0x23);
+
+    /* reset re-derives the same state */
+    CHECK_EQ(elib_nvs_reset(&ctx), ELIB_NVS_OK);
+    CHECK_EQ(ctx.read_slot, 2);
+    CHECK_EQ(ctx.write_slot, 3);
+
+    printf("PASSED\n");
+}
+
+static void test_slot0_invalid_full_scan(void) {
+    printf("Test: invalid slot 0 does not hide later valid records... ");
+
+    memset(g_mem, ERASE_FILL, sizeof(g_mem));
+    CHECK_EQ(elib_nvs_init(&ctx, &ops, BASE, MANAGED, SLOT, USER),
+             ELIB_NVS_OK);
+    /* fill every slot so all of them are valid */
     {
-        elib_nvs_ops_t bad = ops_a;
-        bad.is_empty = NULL;
-        assert(elib_nvs_init(&ctx, &bad, sim_a.base, SIZE_A,
-                             PAGE_A, UNIT_A) == ELIB_NVS_ERR_INVALID_PARAM);
-    }
-    assert(elib_nvs_init(&ctx, &ops_a, sim_a.base + 1u, SIZE_A, /* unaligned start */
-                         PAGE_A, UNIT_A) == ELIB_NVS_ERR_INVALID_PARAM);
-    assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A - 1u, /* unaligned size */
-                         PAGE_A, UNIT_A) == ELIB_NVS_ERR_INVALID_PARAM);
-    assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, PAGE_A / 2u, /* size < page */
-                         PAGE_A, UNIT_A) == ELIB_NVS_ERR_INVALID_PARAM);
-    assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         PAGE_A, SIZE_A + 1u) == ELIB_NVS_ERR_INVALID_PARAM); /* unit > managed */
-    assert(elib_nvs_init(&ctx, &ops_a, 0xFFFFF000u, SIZE_A, /* start + size wraps */
-                         PAGE_A, UNIT_A) == ELIB_NVS_ERR_INVALID_PARAM);
-
-    /* n == 1 domain config is valid */
-    assert(elib_nvs_init(&ctx, &ops_b, sim_b.base, SIZE_B,
-                         PAGE_A, UNIT_B) == ELIB_NVS_OK);
-    assert(ctx.unit_count == N_UNITS_B);
-
-    printf("PASSED\n");
-}
-
-static void test_scan_fresh_domain(void) {
-    printf("Test: scan lands on a fresh empty domain... ");
-
-    memset(sim_mem, ERASE_DEFAULT, sizeof(sim_mem));
-    assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
-    assert(ctx.bit_flags.has_data == 0);
-    assert(ctx.read_unit == 0 && ctx.write_unit == 0);
-
-    /* Read before anything is written */
-    assert(elib_nvs_read(&ctx, rec_back) == ELIB_NVS_ERR_EMPTY);
-
-    /* First write lands on unit 0, then read returns it */
-    fill_record(rec, 1);
-    assert(elib_nvs_write(&ctx, rec) == ELIB_NVS_OK);
-    assert(ctx.read_unit == 0 && ctx.write_unit == 1);
-    memset(rec_back, 0, sizeof(rec_back));
-    assert(elib_nvs_read(&ctx, rec_back) == ELIB_NVS_OK);
-    assert(memcmp(rec_back, rec, UNIT_A) == 0);
-
-    printf("PASSED\n");
-}
-
-static void test_scan_partial_domain(void) {
-    printf("Test: scan places read/write at the data frontier... ");
-
-    memset(sim_mem, ERASE_DEFAULT, sizeof(sim_mem));
-    assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
-
-    /* Three records appended normally */
-    fill_record(rec, 0x10); assert(elib_nvs_write(&ctx, rec) == ELIB_NVS_OK);
-    fill_record(rec, 0x11); assert(elib_nvs_write(&ctx, rec) == ELIB_NVS_OK);
-    fill_record(rec, 0x12); assert(elib_nvs_write(&ctx, rec) == ELIB_NVS_OK);
-    assert(ctx.read_unit == 2 && ctx.write_unit == 3);
-    assert(elib_nvs_read(&ctx, rec_back) == ELIB_NVS_OK);
-    assert(rec_back[0] == 0x12);
-
-    /* Reboot-style relocation (init again) finds the same positions */
-    assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
-    assert(ctx.read_unit == 2 && ctx.write_unit == 3);
-    assert(ctx.bit_flags.has_data == 1);
-    memset(rec_back, 0, sizeof(rec_back));
-    assert(elib_nvs_read(&ctx, rec_back) == ELIB_NVS_OK);
-    assert(rec_back[0] == 0x12); /* newest survives the reboot */
-
-    /* reset() re-derives the same state */
-    assert(elib_nvs_reset(&ctx) == ELIB_NVS_OK);
-    assert(ctx.read_unit == 2 && ctx.write_unit == 3);
-
-    printf("PASSED\n");
-}
-
-static void test_scan_tail_single_empty(void) {
-    printf("Test: scan tail clause - exactly one empty unit left... ");
-
-    memset(sim_mem, ERASE_DEFAULT, sizeof(sim_mem));
-    assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
-    fill_record(rec, 0x21); assert(elib_nvs_write(&ctx, rec) == ELIB_NVS_OK);
-    fill_record(rec, 0x22); assert(elib_nvs_write(&ctx, rec) == ELIB_NVS_OK);
-    fill_record(rec, 0x23); assert(elib_nvs_write(&ctx, rec) == ELIB_NVS_OK);
-    fill_record(rec, 0x24); assert(elib_nvs_write(&ctx, rec) == ELIB_NVS_OK);
-    fill_record(rec, 0x25); assert(elib_nvs_write(&ctx, rec) == ELIB_NVS_OK);
-    assert(ctx.read_unit == 4 && ctx.write_unit == 5);
-
-    /* Reboot: the empty run is exactly one unit (the tail slot) */
-    assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
-    assert(ctx.read_unit == 4 && ctx.write_unit == 5);
-    memset(rec_back, 0, sizeof(rec_back));
-    assert(elib_nvs_read(&ctx, rec_back) == ELIB_NVS_OK);
-    assert(rec_back[0] == 0x25);
-
-    /* Writing into the tail slot: data is alive, pointer wraps to head */
-    fill_record(rec, 0x26);
-    assert(elib_nvs_write(&ctx, rec) == ELIB_NVS_OK);
-    assert(ctx.read_unit == 5 && ctx.write_unit == 0);
-    assert(elib_nvs_read(&ctx, rec_back) == ELIB_NVS_OK);
-    assert(rec_back[0] == 0x26);
-
-    /* The lazy erase has NOT fired yet: 0x26 is still readable */
-    assert(erase_count == 0);
-
-    printf("PASSED\n");
-}
-
-static void test_scan_full_domain(void) {
-    printf("Test: scan full clause + lazy global erase on next write... ");
-
-    erase_count = 0;
-    memset(sim_mem, ERASE_DEFAULT, sizeof(sim_mem));
-    assert(elib_nvs_init(&ctx, &ops_counting, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
-    {
-        uint8_t i;
-        for (i = 0; i < N_UNITS_A; i++) {
-            fill_record(rec, (uint8_t)(0x30 + i));
-            assert(elib_nvs_write(&ctx, rec) == ELIB_NVS_OK);
+        uint32_t i;
+        for (i = 0; i < N_SLOTS; ++i) {
+            fill_record(rec, (uint8_t)(0x30u + i));
+            CHECK_EQ(elib_nvs_write(&ctx, rec), ELIB_NVS_OK);
         }
     }
-    /* Domain fully written, pointer back at head, no erase yet */
-    assert(erase_count == 0);
-    assert(ctx.write_unit == 0);
-    assert(elib_nvs_read(&ctx, rec_back) == ELIB_NVS_OK);
-    assert(rec_back[0] == 0x35); /* the last unit's record lives */
+    CHECK_EQ(ctx.read_slot, N_SLOTS - 1);
+    CHECK_EQ(ctx.write_slot, 0);
 
-    /* Reboot in the full state: read = last unit, write = head */
-    assert(elib_nvs_init(&ctx, &ops_counting, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
-    assert(ctx.read_unit == N_UNITS_A - 1 && ctx.write_unit == 0);
-    assert(ctx.bit_flags.has_data == 1);
-    memset(rec_back, 0, sizeof(rec_back));
-    assert(elib_nvs_read(&ctx, rec_back) == ELIB_NVS_OK);
-    assert(rec_back[0] == 0x35);
+    /* simulate a torn write / page erase at slot 0: its magic is no longer
+     * 0xA5 while the following slots still hold valid older records */
+    g_mem[0 * SLOT + 4] = 0x00u;
 
-    /* Next write cannot find a slot: the lazy global erase fires now */
-    fill_record(rec, 0x36);
-    assert(elib_nvs_write(&ctx, rec) == ELIB_NVS_OK);
-    assert(erase_count == 1);
-    assert(ctx.read_unit == 0 && ctx.write_unit == 1);
-    assert(ctx.bit_flags.has_data == 1);
+    CHECK_EQ(elib_nvs_init(&ctx, &ops, BASE, MANAGED, SLOT, USER),
+             ELIB_NVS_OK);
+    CHECK_EQ(ctx.bit_flags.has_data, 1);
+    CHECK_EQ(ctx.read_slot, N_SLOTS - 1);
     memset(rec_back, 0, sizeof(rec_back));
-    assert(elib_nvs_read(&ctx, rec_back) == ELIB_NVS_OK);
-    assert(rec_back[0] == 0x36); /* cycle restarts from unit 0 */
+    CHECK_EQ(elib_nvs_read(&ctx, rec_back), ELIB_NVS_OK);
+    CHECK_EQ(rec_back[0], (uint8_t)(0x30u + (N_SLOTS - 1)));
 
     printf("PASSED\n");
 }
 
-static void test_write_skips_illegal_windows(void) {
-    printf("Test: orphan window is skipped, reboot relocates past it... ");
+static void test_wrap_rotation(void) {
+    printf("Test: writes rotate through every slot and wrap... ");
 
-    memset(sim_mem, ERASE_DEFAULT, sizeof(sim_mem));
-    assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
-
-    /* Record A lands in unit 0 */
-    fill_record(rec, 0x40);
-    assert(elib_nvs_write(&ctx, rec) == ELIB_NVS_OK);
-
-    /* Out-of-library junk appears in unit 1 while the pointer is there */
+    memset(g_mem, ERASE_FILL, sizeof(g_mem));
+    CHECK_EQ(elib_nvs_init(&ctx, &ops, BASE, MANAGED, SLOT, USER),
+             ELIB_NVS_OK);
     {
-        uint8_t junk[UNIT_A];
-        memset(junk, 0x55, sizeof(junk));
-        assert(sim_write(&sim_a, unit_addr_of(1), junk, UNIT_A) == SIM_OK);
-    }
-
-    /* The (1,2) window is illegal: the write slides to the first legal
-     * double-empty window (2,3) and lands in unit 2 */
-    fill_record(rec, 0x41);
-    assert(elib_nvs_write(&ctx, rec) == ELIB_NVS_OK);
-    assert(ctx.read_unit == 2 && ctx.write_unit == 3);
-
-    /* Reboot: the scan skips both illegal windows ((0,1) and (1,2)) and
-     * seats at (2,3): read = unit 2 = the true newest record */
-    assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
-    assert(ctx.read_unit == 2 && ctx.write_unit == 3);
-    memset(rec_back, 0, sizeof(rec_back));
-    assert(elib_nvs_read(&ctx, rec_back) == ELIB_NVS_OK);
-    assert(rec_back[0] == 0x41);
-
-    printf("PASSED\n");
-}
-
-static void test_n1_domain_rolls(void) {
-    printf("Test: single-unit domain rolls write->erase->write... ");
-
-    erase_count = 0;
-    memset(sim_mem, ERASE_DEFAULT, sizeof(sim_mem));
-    assert(elib_nvs_init(&ctx, &ops_counting, sim_b.base, SIZE_B,
-                         PAGE_A, UNIT_B) == ELIB_NVS_OK);
-    {
-        uint8_t rec1[UNIT_B];
-        memset(rec1, 0xA5, sizeof(rec1));
-        rec1[0] = 0x50;
-        assert(elib_nvs_write(&ctx, rec1) == ELIB_NVS_OK);
-        assert(ctx.read_unit == 0 && ctx.write_unit == 0);
-        assert(erase_count == 0);
-        assert(elib_nvs_read(&ctx, rec_back) == ELIB_NVS_OK);
-        assert(rec_back[0] == 0x50);
-
-        /* Second write: the sole unit is full -> lazy erase -> rewrite */
-        rec1[0] = 0x51;
-        assert(elib_nvs_write(&ctx, rec1) == ELIB_NVS_OK);
-        assert(erase_count == 1);
-        assert(ctx.read_unit == 0 && ctx.write_unit == 0);
-        memset(rec_back, 0, sizeof(rec_back));
-        assert(elib_nvs_read(&ctx, rec_back) == ELIB_NVS_OK);
-        assert(rec_back[0] == 0x51);
+        uint32_t i;
+        for (i = 0; i < 2u * N_SLOTS; ++i) {
+            fill_record(rec, (uint8_t)(0x40u + i));
+            CHECK_EQ(elib_nvs_write(&ctx, rec), ELIB_NVS_OK);
+            CHECK_EQ(ctx.read_slot, i % N_SLOTS);
+            CHECK_EQ(ctx.write_slot, (i + 1u) % N_SLOTS);
+            memset(rec_back, 0, sizeof(rec_back));
+            CHECK_EQ(elib_nvs_read(&ctx, rec_back), ELIB_NVS_OK);
+            CHECK_EQ(rec_back[0], (uint8_t)(0x40u + i));
+        }
     }
 
     printf("PASSED\n");
 }
 
-static void test_io_errors_map(void) {
-    printf("Test: user op failures surface as ELIB_NVS_ERR_IO... ");
+static void test_seq_wrap(void) {
+    printf("Test: sequence wrap-around keeps the newest record... ");
 
-    memset(sim_mem, ERASE_DEFAULT, sizeof(sim_mem));
-    assert(elib_nvs_init(&ctx, &ops_fail_write, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
+    memset(g_mem, ERASE_FILL, sizeof(g_mem));
+    poke_header(0u, 0xFFFFFFFEu);
+    poke_header(1u, 0xFFFFFFFFu);
+    poke_header(2u, 0x00000001u); /* wrapped: this is the newest */
+
+    CHECK_EQ(elib_nvs_init(&ctx, &ops, BASE, MANAGED, SLOT, USER),
+             ELIB_NVS_OK);
+    CHECK_EQ(ctx.bit_flags.has_data, 1);
+    CHECK_EQ(ctx.read_slot, 2);
+    CHECK_EQ(ctx.write_slot, 3);
+    CHECK_EQ(ctx.next_seq, 2u); /* 1 + 1 */
+
+    printf("PASSED\n");
+}
+
+static void test_erase_polarity_zero(void) {
+    printf("Test: a medium that erases to 0x00 reads as empty... ");
+
+    memset(g_mem, 0x00, sizeof(g_mem)); /* erase-to-0 medium */
+
+    CHECK_EQ(elib_nvs_init(&ctx, &ops, BASE, MANAGED, SLOT, USER),
+             ELIB_NVS_OK);
+    CHECK_EQ(ctx.bit_flags.has_data, 0);
+    CHECK_EQ(elib_nvs_read(&ctx, rec_back), ELIB_NVS_ERR_EMPTY);
+
+    fill_record(rec, 0x71);
+    CHECK_EQ(elib_nvs_write(&ctx, rec), ELIB_NVS_OK);
+    CHECK_EQ(elib_nvs_read(&ctx, rec_back), ELIB_NVS_OK);
+    CHECK_EQ(rec_back[0], 0x71);
+
+    /* reboot on the same 0x00-erased medium */
+    CHECK_EQ(elib_nvs_init(&ctx, &ops, BASE, MANAGED, SLOT, USER),
+             ELIB_NVS_OK);
+    CHECK_EQ(ctx.bit_flags.has_data, 1);
+    memset(rec_back, 0, sizeof(rec_back));
+    CHECK_EQ(elib_nvs_read(&ctx, rec_back), ELIB_NVS_OK);
+    CHECK_EQ(rec_back[0], 0x71);
+
+    printf("PASSED\n");
+}
+
+static void test_io_errors_and_guards(void) {
+    printf("Test: I/O failures and not-initialized guards... ");
+
+    memset(g_mem, ERASE_FILL, sizeof(g_mem));
+    CHECK_EQ(elib_nvs_init(&ctx, &ops_fail_read, BASE, MANAGED, SLOT, USER),
+             ELIB_NVS_ERR_IO);
+
+    memset(g_mem, ERASE_FILL, sizeof(g_mem));
+    CHECK_EQ(elib_nvs_init(&ctx, &ops_fail_write, BASE, MANAGED, SLOT, USER),
+             ELIB_NVS_OK);
     fill_record(rec, 0x60);
-    assert(elib_nvs_write(&ctx, rec) == ELIB_NVS_ERR_IO);
+    CHECK_EQ(elib_nvs_write(&ctx, rec), ELIB_NVS_ERR_IO);
 
-    assert(elib_nvs_init(&ctx, &ops_fail_read, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
     {
-        uint8_t rec2[UNIT_A];
-        fill_record(rec2, 0x61);
-        /* write with a failing reader is fine; read then reports IO */
-        assert(elib_nvs_write(&ctx, rec2) == ELIB_NVS_OK);
-        /* swap in a failing reader only: reuse ops_fail_read whose
-         * writer works (sim_write) and reader fails */
-        assert(elib_nvs_read(&ctx, rec_back) == ELIB_NVS_ERR_IO);
+        elib_nvs_ctx_t raw;
+        memset(&raw, 0, sizeof(raw));
+        CHECK_EQ(elib_nvs_read(&raw, rec_back), ELIB_NVS_ERR_NOT_INITIALIZED);
+        CHECK_EQ(elib_nvs_write(&raw, rec), ELIB_NVS_ERR_NOT_INITIALIZED);
+        CHECK_EQ(elib_nvs_reset(&raw), ELIB_NVS_ERR_NOT_INITIALIZED);
     }
 
-    /* Not-initialized guards */
-    {
-        elib_nvs_ctx_t raw_ctx;
-        memset(&raw_ctx, 0, sizeof(raw_ctx));
-        assert(elib_nvs_read(&raw_ctx, rec_back) == ELIB_NVS_ERR_NOT_INITIALIZED);
-        assert(elib_nvs_write(&raw_ctx, rec) == ELIB_NVS_ERR_NOT_INITIALIZED);
-        assert(elib_nvs_reset(&raw_ctx) == ELIB_NVS_ERR_NOT_INITIALIZED);
-        assert(elib_nvs_erase_all(&raw_ctx) == ELIB_NVS_ERR_NOT_INITIALIZED);
-    }
+    CHECK_EQ(elib_nvs_init(&ctx, &ops, BASE, MANAGED, SLOT, USER),
+             ELIB_NVS_OK);
+    CHECK_EQ(elib_nvs_write(&ctx, NULL), ELIB_NVS_ERR_INVALID_PARAM);
+    CHECK_EQ(elib_nvs_read(&ctx, NULL), ELIB_NVS_ERR_INVALID_PARAM);
 
     printf("PASSED\n");
 }
 
-static void test_erase_all(void) {
-    printf("Test: erase_all returns the domain to the fresh state... ");
+static void test_power_loss_matrix(void) {
+    printf("Test: torn writes never expose half-written data... ");
 
-    memset(sim_mem, ERASE_DEFAULT, sizeof(sim_mem));
-    assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
-    fill_record(rec, 0x70); assert(elib_nvs_write(&ctx, rec) == ELIB_NVS_OK);
-    fill_record(rec, 0x71); assert(elib_nvs_write(&ctx, rec) == ELIB_NVS_OK);
-    assert(ctx.bit_flags.has_data == 1);
+    {
+        uint32_t k;
+        for (k = 0u; k <= USER + ELIB_NVS_HDR_SIZE; ++k) {
+            uint32_t i;
+            uint8_t newest;
 
-    assert(elib_nvs_erase_all(&ctx) == ELIB_NVS_OK);
-    assert(ctx.bit_flags.has_data == 0);
-    assert(ctx.write_unit == 0);
-    assert(elib_nvs_read(&ctx, rec_back) == ELIB_NVS_ERR_EMPTY);
+            /* fresh medium, then fill every slot so the next write rewrites
+             * an old slot whose magic is already 0xA5 */
+            memset(g_mem, ERASE_FILL, sizeof(g_mem));
+            CHECK_EQ(elib_nvs_init(&ctx, &ops, BASE, MANAGED, SLOT, USER),
+                     ELIB_NVS_OK);
+            for (i = 0u; i < N_SLOTS; ++i) {
+                fill_record(rec, (uint8_t)(0x10u + i));
+                CHECK_EQ(elib_nvs_write(&ctx, rec), ELIB_NVS_OK);
+            }
+            newest = (uint8_t)(0x10u + (N_SLOTS - 1u));
 
-    /* Write after erase lands at unit 0 again */
-    fill_record(rec, 0x72);
-    assert(elib_nvs_write(&ctx, rec) == ELIB_NVS_OK);
-    assert(ctx.read_unit == 0 && ctx.write_unit == 1);
-    memset(rec_back, 0, sizeof(rec_back));
-    assert(elib_nvs_read(&ctx, rec_back) == ELIB_NVS_OK);
-    assert(rec_back[0] == 0x72);
+            /* tear the next write after exactly k bytes */
+            fill_record(rec, 0x20);
+            g_budget = k;
+            (void)elib_nvs_write(&ctx, rec); /* fails for k < total bytes */
+            g_budget = BUDGET_INF;
 
-    printf("PASSED\n");
-}
+            /* reboot and inspect */
+            CHECK_EQ(elib_nvs_init(&ctx, &ops, BASE, MANAGED, SLOT, USER),
+                     ELIB_NVS_OK);
+            CHECK_EQ(ctx.bit_flags.has_data, 1);
+            memset(rec_back, 0, sizeof(rec_back));
+            if (elib_nvs_read(&ctx, rec_back) == ELIB_NVS_OK) {
+                /* only the previous newest or the fully written new record
+                 * may come back; never a torn mixture */
+                CHECK(rec_back[0] == newest || rec_back[0] == rec[0]);
+            }
+        }
+    }
 
-static void test_null_buf_guard(void) {
-    printf("Test: NULL record buffers are rejected... ");
+    /* first write on an empty medium: either empty or the full record */
+    {
+        uint32_t k;
+        for (k = 0u; k <= USER + ELIB_NVS_HDR_SIZE; ++k) {
+            memset(g_mem, ERASE_FILL, sizeof(g_mem));
+            CHECK_EQ(elib_nvs_init(&ctx, &ops, BASE, MANAGED, SLOT, USER),
+                     ELIB_NVS_OK);
+            fill_record(rec, 0x20);
+            g_budget = k;
+            (void)elib_nvs_write(&ctx, rec);
+            g_budget = BUDGET_INF;
 
-    memset(sim_mem, ERASE_DEFAULT, sizeof(sim_mem));
-    assert(elib_nvs_init(&ctx, &ops_a, sim_a.base, SIZE_A,
-                         PAGE_A, UNIT_A) == ELIB_NVS_OK);
-    assert(elib_nvs_write(&ctx, NULL) == ELIB_NVS_ERR_INVALID_PARAM);
-    assert(elib_nvs_read(&ctx, NULL) == ELIB_NVS_ERR_INVALID_PARAM);
+            CHECK_EQ(elib_nvs_init(&ctx, &ops, BASE, MANAGED, SLOT, USER),
+                     ELIB_NVS_OK);
+            if (ctx.bit_flags.has_data) {
+                memset(rec_back, 0, sizeof(rec_back));
+                CHECK_EQ(elib_nvs_read(&ctx, rec_back), ELIB_NVS_OK);
+                CHECK_EQ(rec_back[0], 0x20);
+            } else {
+                CHECK_EQ(elib_nvs_read(&ctx, rec_back), ELIB_NVS_ERR_EMPTY);
+            }
+        }
+    }
 
     printf("PASSED\n");
 }
 
 int main(void) {
     test_init_valid_and_rejects();
-    test_scan_fresh_domain();
-    test_scan_partial_domain();
-    test_scan_tail_single_empty();
-    test_scan_full_domain();
-    test_write_skips_illegal_windows();
-    test_n1_domain_rolls();
-    test_io_errors_map();
-    test_erase_all();
-    test_null_buf_guard();
+    test_fresh_domain();
+    test_sequential_and_reboot();
+    test_slot0_invalid_full_scan();
+    test_wrap_rotation();
+    test_seq_wrap();
+    test_erase_polarity_zero();
+    test_io_errors_and_guards();
+    test_power_loss_matrix();
 
+    if (g_failures != 0) {
+        printf("FAILED: %d failure(s)\n", g_failures);
+        return 1;
+    }
     printf("All tests PASSED\n");
     return 0;
 }
