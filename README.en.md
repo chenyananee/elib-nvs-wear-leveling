@@ -15,6 +15,31 @@ Designed to layer with [elib-safe-storage](https://gitee.com/chenyananee/elib-sa
 - **Lazy erase**: whole-area erase happens only when "the next write cannot find a legal slot"; the data in the last cell stays readable until the next write replaces it, **zero data waste**
 - **Single-record model**: only "the latest record" is stored; history is reclaimed naturally by erase
 
+## Risk Disclosure and Recommended Pairing
+
+This library does wear leveling only and **does not guarantee data integrity**. Know these
+risks before use:
+
+1. **No CRC / torn-write recovery / bit-flip protection**: whatever is written to the medium
+   is read back as-is; a record that is torn by a power loss may be read back as if valid
+   after a restart.
+2. **Power-loss risk depends on the medium**:
+   - **Byte-writable (EEPROM / FeRAM / MRAM)**: overwrite affects only "the cell being
+     written", so **the history (the previous record and anything older) is intact**; low risk;
+   - **flash (block erase)**: an erase / write-back may **lose a whole page**, taking the
+     history in that page with it; high risk → **must be paired with elib-safe-storage's
+     dual-region backup** as a backstop.
+3. **The managed area may only be accessed by this library**: do not read or write it from
+   outside the library (external tampering = undefined behavior).
+4. **Concurrency safety of the medium ops (including ISRs) is the user's responsibility**:
+   the library does no locking.
+5. The configuration must pass `elib_nvs_init` validation; see §Validation Checklist.
+
+**Recommendation**: flash media **must** be paired with
+[elib-safe-storage](https://gitee.com/chenyananee/elib-safe-storage) (dual region + CRC);
+byte-writable media **should** be paired as well (at least add CRC / torn-write checking so
+a torn record is never mistaken for a valid one).
+
 ## Directory Layout
 
 ```
